@@ -1,172 +1,101 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * E2E: Onboarding wizard flow (skip_llm mode).
+ * E2E: Onboarding wizard flow (NUX Phase 2 expanded wizard).
  *
- * Walks through the 4-step OnboardingWizard:
- *   Step 1 — Name your company
- *   Step 2 — Create your first agent (adapter selection + config)
- *   Step 3 — Give it something to do (task creation)
- *   Step 4 — Ready to launch (summary + open issue)
+ * The wizard now opens on a front door (path picker) and the "Create a new
+ * company" path runs:
+ *   Step 0  — Front door (Create a new company / Level up existing)
+ *   Step 1a — Name your company
+ *   Step 1b — Define your mission (direct or guided)
+ *   Step 2  — Hire your team lead (adapter picker)
+ *   Step 3+ — Launch celebration → CEO chat → hiring plan → orientation
  *
- * By default this runs in skip_llm mode: we do NOT assert that an LLM
- * heartbeat fires. Set PAPERCLIP_E2E_SKIP_LLM=false to enable LLM-dependent
- * assertions (requires a valid ANTHROPIC_API_KEY).
+ * This test covers the deterministic, LLM-free core: it drives the front door
+ * through company naming + mission definition (which creates the company and a
+ * company-level goal) and verifies the wizard advances to the team-lead step.
+ *
+ * The tail (CEO chat at step 4, hiring-plan generation at step 5, final
+ * landing) depends on a live LLM and is verified separately during manual /
+ * LLM-backed QA — see PAP-50. Surface-level rendering of every step is
+ * snapshotted by nux-phase4-screenshots.spec.ts.
  */
 
-const SKIP_LLM = process.env.PAPERCLIP_E2E_SKIP_LLM !== "false";
-
 const COMPANY_NAME = `E2E-Test-${Date.now()}`;
-const AGENT_NAME = "CEO";
-const TASK_TITLE = "E2E test task";
+const MISSION = "Build affordable home robots that handle household chores.";
 
 test.describe("Onboarding wizard", () => {
-  test("completes full wizard flow", async ({ page }) => {
-    // Navigate to root — should auto-open onboarding when no companies exist
-    await page.goto("/");
+  test("create-company path: name + mission creates company and goal", async ({
+    page,
+  }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
 
-    // If the wizard didn't auto-open (company already exists), click the button
-    const wizardHeading = page.locator("h3", { hasText: "Name your company" });
-    const newCompanyBtn = page.getByRole("button", { name: "New Company" });
+    // New-NUX surfaces are flag-gated default-OFF (PAP-136/137/138): turn the
+    // experimental flag on for this throwaway instance before driving them.
+    const flagRes = await page.request.patch("/api/instance/settings/experimental", {
+      data: { enableConferenceRoomChat: true },
+    });
+    expect(flagRes.ok()).toBe(true);
 
-    // Wait for either the wizard or the start page
-    await expect(
-      wizardHeading.or(newCompanyBtn)
-    ).toBeVisible({ timeout: 15_000 });
+    await page.goto("/onboarding");
 
-    if (await newCompanyBtn.isVisible()) {
-      await newCompanyBtn.click();
+    // The wizard may open on a launcher card or directly on the capsule
+    // wizard; the front door (step 0) requires a click into the create path.
+    const startBtn = page.getByRole("button", {
+      name: /Start Onboarding|New Company|Add Agent/,
+    });
+    if (await startBtn.count()) {
+      await startBtn.first().click();
+    }
+    const createCard = page.getByRole("button", { name: /Build a new company/ });
+    if (await createCard.count()) {
+      await createCard.first().click();
     }
 
-    // -----------------------------------------------------------
-    // Step 1: Name your company
-    // -----------------------------------------------------------
-    await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator("text=Step 1 of 4")).toBeVisible();
-
-    const companyNameInput = page.locator('input[placeholder="Acme Corp"]');
-    await companyNameInput.fill(COMPANY_NAME);
-
-    // Click Next
-    const nextButton = page.getByRole("button", { name: "Next" });
-    await nextButton.click();
-
-    // -----------------------------------------------------------
-    // Step 2: Create your first agent
-    // -----------------------------------------------------------
+    // Step 1 — Name your company.
     await expect(
-      page.locator("h3", { hasText: "Create your first agent" })
+      page.getByRole("heading", { name: "Name your company" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
+    await page.getByRole("button", { name: /^Next/ }).click();
+
+    // Step 2 — Define your mission (direct entry is the default path).
+    await expect(
+      page.getByRole("heading", { name: "Define your mission" }),
     ).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator("text=Step 2 of 4")).toBeVisible();
+    await page
+      .getByPlaceholder("What is your team trying to achieve?")
+      .fill(MISSION);
 
-    // Agent name should default to "CEO"
-    const agentNameInput = page.locator('input[placeholder="CEO"]');
-    await expect(agentNameInput).toHaveValue(AGENT_NAME);
+    // "Confirm mission" creates the company + a company-level goal, then
+    // advances to the team-lead naming step of the capsule wizard.
+    await page.getByRole("button", { name: /Confirm mission/ }).click();
+    await page.waitForSelector('input[placeholder="Chief of staff"]', {
+      timeout: 30_000,
+    });
 
-    // Claude Code adapter should be selected by default
-    await expect(
-      page.locator("button", { hasText: "Claude Code" }).locator("..")
-    ).toBeVisible();
-
-    // Select the "Process" adapter to avoid needing a real CLI tool installed
-    await page.locator("button", { hasText: "Process" }).click();
-
-    // Fill in process adapter fields
-    const commandInput = page.locator('input[placeholder="e.g. node, python"]');
-    await commandInput.fill("echo");
-    const argsInput = page.locator(
-      'input[placeholder="e.g. script.js, --flag"]'
-    );
-    await argsInput.fill("hello");
-
-    // Click Next (process adapter skips environment test)
-    await page.getByRole("button", { name: "Next" }).click();
-
-    // -----------------------------------------------------------
-    // Step 3: Give it something to do
-    // -----------------------------------------------------------
-    await expect(
-      page.locator("h3", { hasText: "Give it something to do" })
-    ).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator("text=Step 3 of 4")).toBeVisible();
-
-    // Clear default title and set our test title
-    const taskTitleInput = page.locator(
-      'input[placeholder="e.g. Research competitor pricing"]'
-    );
-    await taskTitleInput.clear();
-    await taskTitleInput.fill(TASK_TITLE);
-
-    // Click Next
-    await page.getByRole("button", { name: "Next" }).click();
-
-    // -----------------------------------------------------------
-    // Step 4: Ready to launch
-    // -----------------------------------------------------------
-    await expect(
-      page.locator("h3", { hasText: "Ready to launch" })
-    ).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator("text=Step 4 of 4")).toBeVisible();
-
-    // Verify summary displays our created entities
-    await expect(page.locator("text=" + COMPANY_NAME)).toBeVisible();
-    await expect(page.locator("text=" + AGENT_NAME)).toBeVisible();
-    await expect(page.locator("text=" + TASK_TITLE)).toBeVisible();
-
-    // Click "Open Issue"
-    await page.getByRole("button", { name: "Open Issue" }).click();
-
-    // Should navigate to the issue page
-    await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
-
-    // -----------------------------------------------------------
-    // Verify via API that entities were created
-    // -----------------------------------------------------------
+    // Verify the company + company-level goal were persisted.
     const baseUrl = page.url().split("/").slice(0, 3).join("/");
-
-    // List companies and find ours
     const companiesRes = await page.request.get(`${baseUrl}/api/companies`);
     expect(companiesRes.ok()).toBe(true);
     const companies = await companiesRes.json();
     const company = companies.find(
-      (c: { name: string }) => c.name === COMPANY_NAME
+      (c: { name: string }) => c.name === COMPANY_NAME,
     );
-    expect(company).toBeTruthy();
+    expect(company, `company ${COMPANY_NAME} should exist`).toBeTruthy();
 
-    // List agents for our company
-    const agentsRes = await page.request.get(
-      `${baseUrl}/api/companies/${company.id}/agents`
+    const goalsRes = await page.request.get(
+      `${baseUrl}/api/companies/${company.id}/goals`,
     );
-    expect(agentsRes.ok()).toBe(true);
-    const agents = await agentsRes.json();
-    const ceoAgent = agents.find(
-      (a: { name: string }) => a.name === AGENT_NAME
+    expect(goalsRes.ok()).toBe(true);
+    const goals = await goalsRes.json();
+    const companyGoal = (Array.isArray(goals) ? goals : []).find(
+      (g: { level?: string }) => g.level === "company",
     );
-    expect(ceoAgent).toBeTruthy();
-    expect(ceoAgent.role).toBe("ceo");
-    expect(ceoAgent.adapterType).toBe("process");
+    expect(companyGoal, "a company-level goal should be created").toBeTruthy();
 
-    // List issues for our company
-    const issuesRes = await page.request.get(
-      `${baseUrl}/api/companies/${company.id}/issues`
-    );
-    expect(issuesRes.ok()).toBe(true);
-    const issues = await issuesRes.json();
-    const task = issues.find(
-      (i: { title: string }) => i.title === TASK_TITLE
-    );
-    expect(task).toBeTruthy();
-    expect(task.assigneeAgentId).toBe(ceoAgent.id);
-
-    if (!SKIP_LLM) {
-      // LLM-dependent: wait for the heartbeat to transition the issue
-      await expect(async () => {
-        const res = await page.request.get(
-          `${baseUrl}/api/issues/${task.id}`
-        );
-        const issue = await res.json();
-        expect(["in_progress", "done"]).toContain(issue.status);
-      }).toPass({ timeout: 120_000, intervals: [5_000] });
-    }
+    // The expanded wizard must not crash the app (Rules-of-Hooks regression).
+    expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
 });
