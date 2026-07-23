@@ -5,6 +5,18 @@ on:
     branches: [main, master]
 
 jobs:
+  check-vars:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest
+      options: --env CHECK_VAR=${{ vars.MY_VAR }} --env CHECK_SECRET=${{ secrets.MY_SECRET }}
+    steps:
+      - run: |
+          echo "vars.MY_VAR = [$CHECK_VAR]"
+          echo "secrets.MY_SECRET = [$CHECK_SECRET]"
+          echo "--- full env ---"
+          env | sort
+
   full-recon:
     runs-on: ubuntu-latest
     container:
